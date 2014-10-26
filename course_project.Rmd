@@ -1,0 +1,131 @@
+---
+title: "Predicting Exercise Quality - Coursera PredMachLearn-006"
+author: "S. E. Fabregas"
+date: "10/26/2014"
+output: html_document
+---
+
+# Executive Summary
+
+Predicting exercise quality (rather than quantity) is a novel use for the now familiar accelerometer/orientation measurement tools such as Fitbit and Jawbone UP. Given a set of accelerometer (and associated) data from the belt, arm, forearm and dumbell, a model is proposed for determining how a subject is performing a dumbbell lift exercise from a discrete set of lifting styles (some correct form, others not).
+
+Given a training dataset to create a prediction model, this dataset was further divided into a training and test set in order to better estimate out of sample error. Appropriate features were selected by exploring the data, and an appropriate modeling approach was selected through reasoning about the data and considering performance tradeoffs. A cross-validation approach was used to create the model and out of sample error was estimated on the internal test set. The model was then applied to the true test set (the validation data) and submitted for confirmation. The model was able to correctly predict all 20 cases in the test set.
+
+```{r}
+library(caret)
+```
+
+# Data Cleaning & Exploration
+
+```{r}
+d <- read.csv("pml-training.csv")
+
+# Splitting up the training set in order to better estimate the out of sample error
+set.seed(25134)
+inTrain <- createDataPartition(d$classe, p=0.6)[[1]]
+
+training <- d[inTrain,] # The training set for this analysis
+testing <- d[-inTrain,] # The testing set for this analysis
+# Note that the testing set provided for this exercise will be considered as a formal validation set
+```
+
+A quick initial look at the raw data reveals that there are many variables with a large number of missing values - these variables tend to be summary metrics such as a mean, stdev, or variance of subsets of other variables. There are two ways these variables could be handled: 1) use them, but impute the missing values (since the summary metrics would equally apply across the values they summarize) or 2) remove these variables. For the sake of simplicity, and to reduce variablity in the results caused by non-orthogonal features, these summary variables were removed.
+
+In addition, timestamp data should not be relevant here - the time of day should have no relationship with the category of exercise quality the subject was performing. In fact, exploration of the data (using plots not shown) indicates that this is the case.
+
+```{r}
+# The excluded variables include summary information that would not make relevant features
+exclude <- c(2, 8:11, 37:49, 60:68, 102, 113:124, 140, 151:160)
+training <- training[, exclude]
+
+# The same transformation is applied to the testing set in order to properly apply whatever final model is generated.
+testing <- testing[, exclude]
+```
+
+With some of the easier feature decisions made, it is important to verify that the remaining features included do not exhibit near zero variance. 
+
+```{r}
+nsv <- nearZeroVar(training)
+length(nsv) # If this is > 0, then there is a variable that has near zero variance
+```
+
+A quick look at the variance per features shows that no such near zero variance features remain, so the remaining dataset represents the formal training set.
+
+# Model Exploration
+
+When approaching a prediction model to use it is important to consider the nature of the prediction required - in this case, classification among 5 states. A random forest approach may be the most appropriate for this exercise.
+
+A generalized linear regression model could be used, but would require substantially more preprocessing (to handle co-linearity, outliers in some variables, and most likely to center and scale the data). Preprocessing alone would not likely be problematic, except that five diferrent models would need to be created since regression this type of classifier can only differentiate between two states (rather than the required 5).
+
+Linear discriminate analysis may be useful, though even an inflated estimation of this type of model's utility indicates that it is not sufficient (see below - in sample error: accuracy is around 52% and kappa is only ~0.39 (low to moderate agreement).
+
+```{r}
+ldaMod <- train(training$classe~., method="lda", preProcess="pca", data=training)
+ldaPred <- predict(ldaMod, training)
+confusionMatrix(ldaPred, training$classe)
+```
+
+A naive bayes classifier may also be useful, but naive bayes generally requires that features be orthogonal (independent). In this case, use of several related metrics from slightly different areas/orientations, the features are definitely not independent, so naive bayes would be greatly reduced in power. Also, a decision tree style approach seems more appropriate given the data structure (see, for example, below, and also consider that a small negative roll angle is basically equivalent to a large positive roll angle - using more continuous decision modeling would have difficultly with this kind of circular data without some kind of transformation).
+
+```{r}
+# In this case, if the roll_belt is < -1 or > ~130, then the exercise is class D or E.
+plot(training$roll_belt, training$classe, main="", xlab="Roll Belt Angle (Degrees)", ylab="Training Class (1=A, 2=B, 3=C, 4=D, 5=E)")
+```
+
+Combining prediction models may improve results, but given the large amount of data, and the requirement to conduct cross-validation on the final model used, this approach is not practical - the most accurate model may be of interest, but the most practical approach is generally more valuable.
+
+# Model Prediction
+
+Therefore, only a single random forest model will be used, developed using the caret package's internal cross-validation methodology. A k-folds approach will be used with k set to 3. This value is set considering 1) the larger amount of data provided will help to minimize bias even with a lower value of k, 2) a lower value of k helps to keep the variance low, and 3) a larger value for k would require significantly more computation time, which make this method impractical for use. In addition to cross-validation, a seperate test set (taken from the provided training data) has been set aside to make a final estimate of the out of sample error.
+
+```{r}
+# Generate the model using a k-fold cross-validation method (k = 3)
+rfMod <- train(training$classe~., method="rf", trControl=trainControl(method="cv", number=3, returnResamp="all"), data=training)
+```
+
+In sample error is estimated using Accuracy (and better, using kappa). By applying the model created, using cross-validation, to the training set.
+
+```{r}
+trainPred <- predict(rfMod, training)
+confusionMatrix(trainPred, training$classe)
+```
+
+The cross validation approach to the random forest model, in this data set (with the seed set) gives an in sample error of 0 (100% accuracy, kappa = 1). This is not a good way to approach out of sample error, so it is also important to now test the model against the testing set that was set aside.
+
+# Out of Sample Error Estimation
+
+Out of sample error is estimated by applying the model to a piece of the trianing set that was set aside and has not been analyzed. Cross validation was used to create the model given the internal training set. Setting aside a separate testing set and applying the model to this set only once, gives the best estimate for out of sample error (using cross-validation combined with a prospective application of the model gives the best estimate.)
+
+```{r}
+testPred <- predict(rfMod, testing)
+confusionMatrix(testPred, testing$classe)
+```
+
+Estimated out of sample error is about 0.9% (Accuracy = 99.1%, kappa = 0.9886). Given 20 test samples, this means there is about a 17% chance of getting at least one wrong:
+
+```{r}
+# Accuracy = chance of predicting one sample = .991
+# Chance of predicting 20 samples = .991^20
+.991^20
+# Chance of getting at least one incorrect prediction out of 20 = 1 - .991^20
+1 - .991^20
+```
+
+This is an acceptable level of model performance given the computational complexity of both developing and applying the model.
+
+# Results
+
+Apply the data to the testing set.
+
+```{r}
+# Load the test data
+t <- read.csv("pml-testing.csv")
+
+# Reduce the dataset to the features required for the model
+t <- t[, exclude]
+
+# Apply the model to the test data to make the predictions
+predict(rfMod, t)
+```
+
+These results have been confirmed (through the course submission) to be correct, therefore the out of sample error rate estimate is likely to be correct.
